@@ -5,15 +5,21 @@ This version sends notifications SYNCHRONOUSLY.
 Each request blocks for 3 seconds while "sending" the notification.
 
 YOUR TASK: Convert this to use rq for background processing!
+
+
+
 """
 
+import os
 from flask import Flask, jsonify, request
+from redis import Redis
+from tasks import send_notification
 import time
 import uuid
 from datetime import datetime
 
 app = Flask(__name__)
-
+redis_conn = Redis.from_url(os.getenv('REDIS_URL', 'redis://localhost:6379/0'))
 # In-memory store for notifications
 notifications = {}
 
@@ -75,18 +81,23 @@ def create_notification():
 
     # THIS IS THE PROBLEM: We block here for 3 seconds!
     # The user can't do anything while we wait.
-    result = send_notification_sync(notification_id, email, message)
+    #result = send_notification_sync(notification_id, email, message)
+
+    # Queue the notification to be sent in the background
+    #job = send_notification.delay(notification_id, email, message)
 
     notification = {
         "id": notification_id,
         "email": email,
         "message": message,
-        "status": result['status'],
-        "sent_at": result['sent_at']
+        "status": "queued",
+        "sent_at": datetime.utcnow().isoformat() + "Z"
     }
     notifications[notification_id] = notification
+    job = send_notification.delay(notification_id, email, message)
 
-    return jsonify(notification), 201
+    #return jsonify(notification), 201
+    return jsonify({"job_id": job.id}), 202
 
 
 @app.route('/notifications', methods=['GET'])
@@ -105,6 +116,17 @@ def get_notification(notification_id):
         return jsonify({"error": "Notification not found"}), 404
     return jsonify(notification)
 
+
+@app.route('/jobs/<job_id>', methods=['GET'])
+def get_job_status(job_id):
+    """Get the status of a background job."""
+    from rq.job import Job
+    job = Job.fetch(job_id, connection=redis_conn)
+    return jsonify({
+        "job_id": job_id,
+        "status": job.get_status(),
+        "result": job.result if job.is_finished else None
+    })
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
